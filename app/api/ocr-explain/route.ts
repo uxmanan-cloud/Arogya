@@ -19,7 +19,7 @@ async function ocrPdfWithVision(buffer: Buffer, maxPages = 3): Promise<string> {
 
   try {
     // Import required modules
-    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.js")
+    const pdfjs = await import("pdfjs-dist")
     const { createCanvas } = await import("@napi-rs/canvas")
     const { ImageAnnotatorClient } = await import("@google-cloud/vision")
 
