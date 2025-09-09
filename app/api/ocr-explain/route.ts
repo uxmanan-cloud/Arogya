@@ -13,25 +13,28 @@ async function readPdfText(buf: ArrayBuffer) {
   return String(res?.text || "")
 }
 
-async function ocrImageWithVision(base64Content: string): Promise<string> {
-  const key = ENV.GOOGLE_CLOUD_VISION_KEY
-  const url = `https://vision.googleapis.com/v1/images:annotate?key=${encodeURIComponent(key)}`
-  const payload = {
-    requests: [
-      {
-        image: { content: base64Content },
-        features: [{ type: "DOCUMENT_TEXT_DETECTION" }],
-      },
-    ],
+async function ocrPdfWithVision(buffer: Buffer): Promise<string> {
+  if (!ENV.GOOGLE_SERVICE_ACCOUNT_JSON || !ENV.GOOGLE_PROJECT_ID) {
+    throw new Error("Google Cloud Vision credentials not configured")
   }
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+
+  const { ImageAnnotatorClient } = await import("@google-cloud/vision")
+
+  // Parse service account JSON from environment variable
+  const credentials = JSON.parse(ENV.GOOGLE_SERVICE_ACCOUNT_JSON)
+
+  const client = new ImageAnnotatorClient({
+    credentials,
+    projectId: ENV.GOOGLE_PROJECT_ID,
   })
-  const j = await r.json()
-  const text = j?.responses?.[0]?.fullTextAnnotation?.text || j?.responses?.[0]?.textAnnotations?.[0]?.description || ""
-  return text
+
+  // Use document_text_detection for better OCR results on documents
+  const [result] = await client.documentTextDetection({
+    image: { content: buffer },
+  })
+
+  const fullTextAnnotation = result.fullTextAnnotation
+  return fullTextAnnotation?.text || ""
 }
 
 async function maybeTranslate(text: string, target: string): Promise<string> {
@@ -118,7 +121,7 @@ type ExtractionMeta = {
   contentType: string | null
   textLength: number
   parsedCount: number
-  used: "pdf-parse" | "diagnostic"
+  used: "pdf-parse" | "vision-ocr" | "diagnostic"
   fileUrlPrefix?: string
   size?: number
   status?: number
@@ -372,7 +375,7 @@ export async function POST(req: Request): Promise<NextResponse<SuccessResponse |
     }
 
     let rawText = ""
-    let extractorUsed: "pdf-parse" | "diagnostic" = "pdf-parse"
+    let extractorUsed: "pdf-parse" | "vision-ocr" = "pdf-parse"
 
     try {
       const pdfParse = (await import("pdf-parse")).default as any
@@ -386,29 +389,80 @@ export async function POST(req: Request): Promise<NextResponse<SuccessResponse |
         hasText: rawText.trim().length > 0,
       })
 
-      if (rawText.length === 0) {
-        return bad(400, {
-          error: "No text layer; OCR not enabled",
-          details: { size: bytes },
+      // If pdf-parse returns no text, try OCR fallback
+      if (rawText.trim().length === 0) {
+        console.log("[v0] pdf-parse returned no text, trying Vision OCR fallback")
+
+        try {
+          rawText = await ocrPdfWithVision(buffer)
+          extractorUsed = "vision-ocr"
+
+          console.log("[v0] Vision OCR completed:", {
+            used: "vision-ocr",
+            textLength: rawText.length,
+          })
+
+          if (rawText.trim().length === 0) {
+            return bad(400, {
+              error: "OCR returned no text",
+              details: { size: bytes },
+              meta: {
+                contentType,
+                status: fRes.status,
+                size: bytes,
+                used: "vision-ocr",
+              },
+            })
+          }
+        } catch (ocrError) {
+          return bad(500, {
+            error: "OCR processing failed",
+            details: ocrError instanceof Error ? ocrError.message : "Vision OCR error",
+            meta: {
+              contentType,
+              status: fRes.status,
+              size: bytes,
+              used: "vision-ocr",
+            },
+          })
+        }
+      }
+    } catch (pdfError) {
+      console.log("[v0] pdf-parse failed, trying Vision OCR fallback")
+
+      try {
+        rawText = await ocrPdfWithVision(buffer)
+        extractorUsed = "vision-ocr"
+
+        console.log("[v0] Vision OCR completed after pdf-parse failure:", {
+          used: "vision-ocr",
+          textLength: rawText.length,
+        })
+
+        if (rawText.trim().length === 0) {
+          return bad(400, {
+            error: "OCR returned no text",
+            details: { size: bytes },
+            meta: {
+              contentType,
+              status: fRes.status,
+              size: bytes,
+              used: "vision-ocr",
+            },
+          })
+        }
+      } catch (ocrError) {
+        return bad(500, {
+          error: "Both PDF parsing and OCR failed",
+          details: "pdf-parse threw; OCR also failed",
           meta: {
             contentType,
             status: fRes.status,
             size: bytes,
-            used: "pdf-parse",
+            used: "vision-ocr",
           },
         })
       }
-    } catch (pdfError) {
-      return bad(500, {
-        error: "PDF parsing failed",
-        details: "pdf-parse threw; likely scanned/encrypted PDF",
-        meta: {
-          contentType,
-          status: fRes.status,
-          size: bytes,
-          used: "pdf-parse",
-        },
-      })
     }
 
     const findings = extractMedicalTerms(rawText)
@@ -416,6 +470,7 @@ export async function POST(req: Request): Promise<NextResponse<SuccessResponse |
     console.log("[v0] Medical term extraction completed:", {
       findingsCount: findings.length,
       textLength: rawText.length,
+      extractorUsed,
     })
 
     return NextResponse.json({
