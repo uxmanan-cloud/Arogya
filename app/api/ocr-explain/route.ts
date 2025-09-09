@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server"
 import { ENV } from "@/lib/safe-env"
-import { assertAbsoluteHttps } from "@/lib/url-utils"
 
 // Node runtime
 export const runtime = "nodejs"
@@ -13,28 +12,63 @@ async function readPdfText(buf: ArrayBuffer) {
   return String(res?.text || "")
 }
 
-async function ocrPdfWithVision(buffer: Buffer): Promise<string> {
+async function ocrPdfWithVision(buffer: Buffer, maxPages = 3): Promise<string> {
   if (!ENV.GOOGLE_SERVICE_ACCOUNT_JSON || !ENV.GOOGLE_PROJECT_ID) {
     throw new Error("Google Cloud Vision credentials not configured")
   }
 
-  const { ImageAnnotatorClient } = await import("@google-cloud/vision")
+  try {
+    // Import required modules
+    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.js")
+    const { createCanvas } = await import("@napi-rs/canvas")
+    const { ImageAnnotatorClient } = await import("@google-cloud/vision")
 
-  // Parse service account JSON from environment variable
-  const credentials = JSON.parse(ENV.GOOGLE_SERVICE_ACCOUNT_JSON)
+    // Parse service account JSON
+    const credentials = JSON.parse(ENV.GOOGLE_SERVICE_ACCOUNT_JSON)
+    const client = new ImageAnnotatorClient({
+      credentials,
+      projectId: ENV.GOOGLE_PROJECT_ID,
+    })
 
-  const client = new ImageAnnotatorClient({
-    credentials,
-    projectId: ENV.GOOGLE_PROJECT_ID,
-  })
+    // Load PDF
+    const loadingTask = pdfjs.getDocument({ data: buffer })
+    const pdf = await loadingTask.promise
 
-  // Use document_text_detection for better OCR results on documents
-  const [result] = await client.documentTextDetection({
-    image: { content: buffer },
-  })
+    const numPages = Math.min(pdf.numPages, maxPages)
+    let fullText = ""
 
-  const fullTextAnnotation = result.fullTextAnnotation
-  return fullTextAnnotation?.text || ""
+    // Process each page
+    for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+      const page = await pdf.getPage(pageNum)
+      const viewport = page.getViewport({ scale: 2.0 }) // High resolution
+
+      // Create canvas
+      const canvas = createCanvas(viewport.width, viewport.height)
+      const context = canvas.getContext("2d")
+
+      // Render page to canvas
+      await page.render({
+        canvasContext: context,
+        viewport: viewport,
+      }).promise
+
+      // Convert to PNG buffer
+      const pngBuffer = canvas.toBuffer("image/png")
+
+      // OCR the page
+      const [result] = await client.documentTextDetection({
+        image: { content: pngBuffer },
+      })
+
+      const pageText = result.fullTextAnnotation?.text || ""
+      fullText += pageText + "\n"
+    }
+
+    return fullText.trim()
+  } catch (error) {
+    console.error("[v0] Vision OCR error:", error)
+    throw error
+  }
 }
 
 async function maybeTranslate(text: string, target: string): Promise<string> {
@@ -114,22 +148,30 @@ type TermValueItem = {
   value: number | string
   units: string | null
   refRange: string | null
+  flag: "Concern" | "Everything looks good" | "Borderline" | "High" | "Low" | null
   rawLine: string
+}
+
+type PatientInfo = {
+  name?: string
+  ageYears?: number
+  gender?: string
+  bookingId?: string
+  sampleDate?: string
 }
 
 type ExtractionMeta = {
   contentType: string | null
-  textLength: number
+  size: number
+  status: number
+  used: "pdf-parse" | "vision-ocr"
   parsedCount: number
-  used: "pdf-parse" | "vision-ocr" | "diagnostic"
-  fileUrlPrefix?: string
-  size?: number
-  status?: number
 }
 
 type SuccessResponse = {
   ok: true
   meta: ExtractionMeta
+  patient: PatientInfo
   data: {
     findings: TermValueItem[]
     previewText: string
@@ -143,6 +185,79 @@ type ErrorResponse = {
   meta?: Partial<ExtractionMeta>
 }
 
+function normalizeTermName(rawTerm: string): string {
+  const term = rawTerm
+    .trim()
+    .replace(/[:\-–—]+$/, "")
+    .trim()
+
+  const normalizations: Record<string, string> = {
+    "Hemoglobin Hb": "Hemoglobin",
+    "Haemoglobin (HB)": "Hemoglobin",
+    "Thyroid Stimulating Hormone (TSH)-Ultrasensitive": "TSH",
+    "TSH-Ultrasensitive": "TSH",
+    "Serum Creatinine": "Creatinine",
+    "Total Cholesterol": "Total Cholesterol",
+    "Cholesterol-Total, Serum": "Total Cholesterol",
+    "Cholesterol Total": "Total Cholesterol",
+    "Serum Triglycerides": "Triglycerides",
+    "Vitamin D Total-25 Hydroxy": "Vitamin D 25-OH",
+    "Vitamin D (25-OH)": "Vitamin D 25-OH",
+    "VITAMIN B12": "Vitamin B12",
+    "Vitamin B-12": "Vitamin B12",
+  }
+
+  return normalizations[term] || term
+}
+
+function normalizeUnits(rawUnits: string | null): string | null {
+  if (!rawUnits) return null
+
+  const units = rawUnits.trim()
+  const standardUnits: Record<string, string> = {
+    "mg/dl": "mg/dl",
+    "mg/dL": "mg/dl",
+    "g/dL": "g/dL",
+    "g/dl": "g/dL",
+    "µIU/ml": "µIU/ml",
+    "uIU/ml": "µIU/ml",
+    "ng/ml": "ng/ml",
+    "ng/mL": "ng/ml",
+    "U/L": "U/L",
+    "mmol/L": "mmol/L",
+    "10^3/µl": "10^3/µl",
+    fL: "fL",
+    pg: "pg",
+    "%": "%",
+  }
+
+  return standardUnits[units] || units
+}
+
+function detectFlag(line: string, nextLine?: string): TermValueItem["flag"] {
+  const flagPattern = /(Everything looks good|Concern|Borderline|High|Low)/i
+
+  const match = line.match(flagPattern) || nextLine?.match(flagPattern)
+  if (match) {
+    const flag = match[1].toLowerCase()
+    switch (flag) {
+      case "everything looks good":
+        return "Everything looks good"
+      case "concern":
+        return "Concern"
+      case "borderline":
+        return "Borderline"
+      case "high":
+        return "High"
+      case "low":
+        return "Low"
+      default:
+        return null
+    }
+  }
+  return null
+}
+
 function extractMedicalTerms(text: string): TermValueItem[] {
   const findings: TermValueItem[] = []
   const lines = text
@@ -150,68 +265,160 @@ function extractMedicalTerms(text: string): TermValueItem[] {
     .map((line) => line.trim())
     .filter(Boolean)
 
-  // Common medical term patterns
-  const patterns = [
-    // "Hemoglobin: 13.5 g/dL" or "Hb 13.5 g/dL (Ref: 12–16)"
-    /^([A-Za-z][A-Za-z0-9\s\-$$$$]+?)[\s:]+([0-9]+\.?[0-9]*)\s*([a-zA-Z/]+)?\s*(?:$$(?:Ref:?\s*)?([0-9\-–—]+(?:\s*[a-zA-Z/]*)?)$$)?/,
-
-    // "Fasting Glucose - 98 mg/dL (70–100)"
-    /^([A-Za-z][A-Za-z0-9\s\-$$$$]+?)\s*[-–—]\s*([0-9]+\.?[0-9]*)\s*([a-zA-Z/]+)?\s*(?:$$([0-9\-–—]+(?:\s*[a-zA-Z/]*)?)$$)?/,
-
-    // "Vitamin D (25-OH) 22 ng/mL, Range 30–100"
-    /^([A-Za-z][A-Za-z0-9\s\-$$$$]+?)\s+([0-9]+\.?[0-9]*)\s*([a-zA-Z/]+)?\s*(?:,?\s*Range\s*([0-9\-–—]+(?:\s*[a-zA-Z/]*)?)?)?/,
-  ]
-
   const seenTerms = new Set<string>()
 
-  for (const line of lines) {
-    // Skip obvious non-medical content
-    if (line.match(/^(Dr\.|Doctor|Address|Phone|Date|Invoice|Patient ID|DOB)/i)) continue
-    if (line.length < 5 || line.length > 200) continue
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const nextLine = lines[i + 1]
 
-    for (const pattern of patterns) {
-      const match = line.match(pattern)
+    // Skip headers and non-medical content
+    if (
+      line.match(
+        /^(Dr\.|Doctor|Address|Phone|Date|Invoice|Patient ID|DOB|Test Name|Value|Unit|Bio\. Ref Interval|Method:|Page \d+)/i,
+      )
+    )
+      continue
+    if (line.length < 5 || line.length > 300) continue
+
+    let match: RegExpMatchArray | null = null
+    let term = ""
+    let value: number | string = ""
+    let units: string | null = null
+    let refRange: string | null = null
+
+    // Pattern 1: Table row format (most specific)
+    // e.g. "Serum Creatinine ... 1.06 mg/dl 0.2-1.2"
+    const tablePattern =
+      /^([A-Za-z0-9 /()\-.,+%]+?)\s+([+-]?\d+(?:\.\d+)?)\s+([A-Za-zµ/%^0-9\-·]+)\s+((?:[<>=]?\s*\d+(?:\.\d+)?\s*(?:–|-|to)\s*\d+(?:\.\d+)?|[<>=]\s*\d+(?:\.\d+)?|[A-Za-z0-9 ./%^µ\-–<>=]+))$/
+    match = line.match(tablePattern)
+    if (match) {
+      ;[, term, value, units, refRange] = match
+    }
+
+    // Pattern 2: Card/colon format
+    // e.g. "Haemoglobin (HB) : 14.6 g/dL" or "Cholesterol-Total, Serum 249 mg/dl   Concern"
+    if (!match) {
+      const cardPattern = /^([A-Za-z0-9 ()/\-.,]+?)\s*[:-]\s*([+-]?\d+(?:\.\d+)?)(?:\s*([A-Za-zµ/%^0-9\-·]+))?/
+      match = line.match(cardPattern)
       if (match) {
-        const [, termRaw, valueRaw, unitsRaw, refRangeRaw] = match
-
-        // Clean up term name
-        const term = termRaw
-          .trim()
-          .replace(/[:\-–—]+$/, "")
-          .trim()
-        if (term.length < 2) continue
-
-        // Normalize term for deduplication
-        const normalizedTerm = term.toLowerCase().replace(/[^a-z0-9]/g, "")
-        if (seenTerms.has(normalizedTerm)) continue
-
-        // Parse value
-        const numValue = Number.parseFloat(valueRaw)
-        const value = isNaN(numValue) ? valueRaw : numValue
-
-        // Clean units and reference range
-        const units = unitsRaw?.trim() || null
-        const refRange = refRangeRaw?.trim() || null
-
-        findings.push({
-          term,
-          value,
-          units,
-          refRange,
-          rawLine: line,
-        })
-
-        seenTerms.add(normalizedTerm)
-        break // Only match first pattern per line
+        ;[, term, value, units] = match
       }
+    }
+
+    // Pattern 3: Summary card format
+    // e.g. "Vitamin D 11.94 ng/ml  Concern"
+    if (!match) {
+      const summaryPattern =
+        /^([A-Za-z0-9 ()/\-.,]+?)\s+([+-]?\d+(?:\.\d+)?)\s*([A-Za-zµ/%^0-9\-·]+)?\s*(Concern|Everything looks good|Borderline|High|Low)?/
+      match = line.match(summaryPattern)
+      if (match) {
+        ;[, term, value, units] = match
+      }
+    }
+
+    // Pattern 4: Stacked format (term on one line, value on next)
+    if (!match && nextLine) {
+      const termPattern = /^([A-Za-z][A-Za-z0-9 ()/\-.,]+)$/
+      const valuePattern = /^([+-]?\d+(?:\.\d+)?)(?:\s*([A-Za-zµ/%^0-9\-·]+))?/
+
+      const termMatch = line.match(termPattern)
+      const valueMatch = nextLine.match(valuePattern)
+
+      if (termMatch && valueMatch) {
+        term = termMatch[1]
+        value = valueMatch[1]
+        units = valueMatch[2] || null
+        i++ // Skip next line since we processed it
+      }
+    }
+
+    if (term && value) {
+      // Normalize term for deduplication
+      const normalizedKey = term.toLowerCase().replace(/[^a-z0-9]/g, "")
+      if (seenTerms.has(normalizedKey)) continue
+
+      // Parse numeric value
+      const numValue = Number.parseFloat(String(value))
+      const finalValue = isNaN(numValue) ? value : numValue
+
+      // Handle percentage and ratio units
+      if (!units && (String(value).includes("%") || term.toLowerCase().includes("ratio"))) {
+        units = String(value).includes("%") ? "%" : "Ratio"
+      }
+
+      // Detect flags
+      const flag = detectFlag(line, nextLine)
+
+      // Extract reference range from parentheses if not already found
+      if (!refRange) {
+        const refMatch = line.match(/$$([^)]+(?:–|-|to)[^)]+)$$/) || line.match(/Ref:?\s*([0-9\-–—<>=\s.]+)/)
+        if (refMatch) {
+          refRange = refMatch[1].trim()
+        }
+      }
+
+      findings.push({
+        term: normalizeTermName(term),
+        value: finalValue,
+        units: normalizeUnits(units),
+        refRange: refRange?.trim() || null,
+        flag,
+        rawLine: line,
+      })
+
+      seenTerms.add(normalizedKey)
     }
   }
 
   return findings
 }
 
+function extractPatientInfo(text: string): PatientInfo {
+  const patient: PatientInfo = {}
+  const lines = text.split("\n").slice(0, 20) // Check first 20 lines
+
+  for (const line of lines) {
+    // Name extraction (common patterns)
+    if (!patient.name) {
+      const nameMatch =
+        line.match(/(?:Name|Patient)[:\s]+([A-Za-z\s]+)/) || line.match(/^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)$/)
+      if (nameMatch && nameMatch[1].length < 50) {
+        patient.name = nameMatch[1].trim()
+      }
+    }
+
+    // Booking ID
+    if (!patient.bookingId) {
+      const bookingMatch = line.match(/(?:Booking|ID|Reference)[:\s#]+([A-Z0-9]+)/)
+      if (bookingMatch) {
+        patient.bookingId = bookingMatch[1]
+      }
+    }
+
+    // Sample date
+    if (!patient.sampleDate) {
+      const dateMatch = line.match(/(?:Sample|Collection|Date)[:\s]+(\d{1,2}\/\w{3}\/\d{4}|\d{1,2}-\d{1,2}-\d{4})/)
+      if (dateMatch) {
+        patient.sampleDate = dateMatch[1]
+      }
+    }
+
+    // Age and gender
+    if (!patient.ageYears || !patient.gender) {
+      const ageGenderMatch = line.match(/(\d{1,3})\s*(?:years?|yrs?|Y)\s*(?:old)?\s*[,\s]*([MF]ale|[MF])/i)
+      if (ageGenderMatch) {
+        patient.ageYears = Number.parseInt(ageGenderMatch[1])
+        patient.gender = ageGenderMatch[2].toLowerCase().startsWith("m") ? "Male" : "Female"
+      }
+    }
+  }
+
+  return patient
+}
+
 type Payload = {
   fileUrl: string
+  pages?: number
   language?: string
   prefs?: Record<string, any>
   mode?: "live" | "mock"
@@ -233,45 +440,52 @@ export async function POST(req: Request): Promise<NextResponse<SuccessResponse |
       body.fileUrl.startsWith("./") ||
       body.fileUrl.startsWith("/") ||
       body.fileUrl.includes("test/data") ||
-      body.fileUrl.includes("file://")
+      body.fileUrl.includes("file://") ||
+      body.fileUrl.includes("localhost") ||
+      !body.fileUrl.startsWith("http")
     ) {
-      return bad(400, { error: "Local file paths are not allowed" })
+      return bad(400, { error: "Local file paths are not allowed. Use http(s) URLs only." })
     }
 
-    if (!body.fileUrl.startsWith("http://") && !body.fileUrl.startsWith("https://")) {
-      return bad(400, { error: "fileUrl must be an http(s) URL" })
-    }
-
-    console.log("[v0] OCR route processing:", {
+    console.log("[v0] Processing Healthians-style medical PDF:", {
       mode: body.mode || "live",
+      maxPages: body.pages || 3,
       hasFileUrl: !!body.fileUrl,
-      urlType: body.fileUrl.startsWith("https://") ? "https" : "http",
     })
 
     if (body.mode === "mock") {
-      console.log("[v0] Using mock mode - no file processing")
-
       const mockFindings: TermValueItem[] = [
         {
+          term: "Total Cholesterol",
+          value: 249,
+          units: "mg/dl",
+          refRange: "Desirable <200 / 200-239 Borderline / ≥240 High",
+          flag: "Concern",
+          rawLine: "Cholesterol-Total, Serum 249 mg/dl   Concern",
+        },
+        {
+          term: "Triglycerides",
+          value: 273,
+          units: "mg/dl",
+          refRange: null,
+          flag: "High",
+          rawLine: "Triglycerides 273 mg/dl High",
+        },
+        {
+          term: "Vitamin D 25-OH",
+          value: 11.94,
+          units: "ng/ml",
+          refRange: "30 - 100",
+          flag: "Concern",
+          rawLine: "Vitamin D 11.94 ng/ml  Concern",
+        },
+        {
           term: "Hemoglobin",
-          value: 13.5,
+          value: 14.6,
           units: "g/dL",
-          refRange: "12–16",
-          rawLine: "Hemoglobin: 13.5 g/dL (Ref: 12–16)",
-        },
-        {
-          term: "Fasting Glucose",
-          value: 98,
-          units: "mg/dL",
-          refRange: "70–100",
-          rawLine: "Fasting Glucose - 98 mg/dL (70–100)",
-        },
-        {
-          term: "Cholesterol Total",
-          value: 180,
-          units: "mg/dL",
-          refRange: "< 200",
-          rawLine: "Cholesterol Total 180 mg/dL (< 200)",
+          refRange: null,
+          flag: "Everything looks good",
+          rawLine: "Hemoglobin Hb 14.6 g/dL  Everything looks good",
         },
       ]
 
@@ -279,25 +493,23 @@ export async function POST(req: Request): Promise<NextResponse<SuccessResponse |
         ok: true,
         meta: {
           contentType: "application/pdf",
-          textLength: 500,
-          parsedCount: 3,
+          size: 1024000,
+          status: 200,
           used: "pdf-parse",
+          parsedCount: 4,
+        },
+        patient: {
+          name: "Manan",
+          bookingId: "9302606388",
+          sampleDate: "04/Nov/2023",
         },
         data: {
           findings: mockFindings,
           previewText:
-            "Mock lab report: Patient shows normal glucose levels, hemoglobin within range, and acceptable cholesterol levels. All major indicators are within healthy parameters.",
+            "Healthians Lab Report - Patient: Manan, Booking ID: 9302606388, Sample Date: 04/Nov/2023. Multiple lab values extracted including cholesterol, triglycerides, vitamin levels, and blood parameters.",
         },
       })
     }
-
-    try {
-      assertAbsoluteHttps(body.fileUrl)
-    } catch (error) {
-      return bad(400, { error: "fileUrl must be an http(s) URL" })
-    }
-
-    console.log("[v0] Fetching file from URL:", body.fileUrl)
 
     let fRes: Response
     try {
@@ -319,58 +531,31 @@ export async function POST(req: Request): Promise<NextResponse<SuccessResponse |
         meta: {
           contentType: fRes.headers.get("content-type"),
           status: fRes.status,
-          used: "diagnostic",
+          size: 0,
+          used: "pdf-parse",
+          parsedCount: 0,
         },
       })
     }
 
     const contentType = fRes.headers.get("content-type") || ""
-
     const arrayBuffer = await fRes.arrayBuffer()
     const buffer = Buffer.from(arrayBuffer)
     const bytes = buffer.length
 
-    console.log("[v0] File fetched successfully:", {
-      contentType,
-      size: bytes,
-      status: fRes.status,
-    })
-
-    if (bytes >= 5) {
-      const first5Bytes = buffer.subarray(0, 5).toString("ascii")
-      const first20Hex = buffer.subarray(0, Math.min(20, bytes)).toString("hex")
-
-      if (first5Bytes !== "%PDF-") {
-        return bad(400, {
-          error: "Not a PDF or URL expired",
-          details: {
-            contentType,
-            status: fRes.status,
-            size: bytes,
-            head: first20Hex,
-          },
-          meta: {
-            contentType,
-            status: fRes.status,
-            size: bytes,
-            used: "diagnostic",
-          },
-        })
-      }
-    } else {
+    if (bytes < 5) {
       return bad(400, {
         error: "File too small to be a valid PDF",
-        details: {
-          contentType,
-          status: fRes.status,
-          size: bytes,
-        },
-        meta: {
-          contentType,
-          status: fRes.status,
-          size: bytes,
-          used: "diagnostic",
-        },
+        meta: { contentType, status: fRes.status, size: bytes, used: "pdf-parse", parsedCount: 0 },
+      })
+    }
+
+    const pdfHeader = buffer.subarray(0, 5).toString("ascii")
+    if (pdfHeader !== "%PDF-") {
+      return bad(400, {
+        error: "Not a PDF or URL expired",
+        details: { expectedHeader: "%PDF-", actualHeader: pdfHeader },
+        meta: { contentType, status: fRes.status, size: bytes, used: "pdf-parse", parsedCount: 0 },
       })
     }
 
@@ -381,95 +566,62 @@ export async function POST(req: Request): Promise<NextResponse<SuccessResponse |
       const pdfParse = (await import("pdf-parse")).default as any
       const res = await pdfParse(buffer)
       rawText = String(res?.text || "")
-      extractorUsed = "pdf-parse"
 
-      console.log("[v0] PDF processing completed:", {
-        used: "pdf-parse",
+      console.log("[v0] pdf-parse completed:", {
         textLength: rawText.length,
-        hasText: rawText.trim().length > 0,
+        hasSignificantText: rawText.trim().length >= 50,
       })
 
-      // If pdf-parse returns no text, try OCR fallback
-      if (rawText.trim().length === 0) {
-        console.log("[v0] pdf-parse returned no text, trying Vision OCR fallback")
+      // If pdf-parse returns insufficient text, try Vision OCR
+      if (rawText.trim().length < 50) {
+        console.log("[v0] pdf-parse returned insufficient text, trying Vision OCR")
 
         try {
-          rawText = await ocrPdfWithVision(buffer)
-          extractorUsed = "vision-ocr"
-
-          console.log("[v0] Vision OCR completed:", {
-            used: "vision-ocr",
-            textLength: rawText.length,
-          })
-
-          if (rawText.trim().length === 0) {
-            return bad(400, {
-              error: "OCR returned no text",
-              details: { size: bytes },
-              meta: {
-                contentType,
-                status: fRes.status,
-                size: bytes,
-                used: "vision-ocr",
-              },
-            })
+          const ocrText = await ocrPdfWithVision(buffer, body.pages || 3)
+          if (ocrText.trim().length >= 50) {
+            rawText = ocrText
+            extractorUsed = "vision-ocr"
+            console.log("[v0] Vision OCR successful:", { textLength: rawText.length })
           }
         } catch (ocrError) {
-          return bad(500, {
-            error: "OCR processing failed",
-            details: ocrError instanceof Error ? ocrError.message : "Vision OCR error",
-            meta: {
-              contentType,
-              status: fRes.status,
-              size: bytes,
-              used: "vision-ocr",
-            },
-          })
+          console.error("[v0] Vision OCR failed:", ocrError)
+          if (rawText.trim().length === 0) {
+            return bad(500, {
+              error: "OCR returned no text",
+              details: "Both pdf-parse and Vision OCR failed to extract text",
+              meta: { contentType, status: fRes.status, size: bytes, used: "vision-ocr", parsedCount: 0 },
+            })
+          }
         }
       }
     } catch (pdfError) {
       console.log("[v0] pdf-parse failed, trying Vision OCR fallback")
 
       try {
-        rawText = await ocrPdfWithVision(buffer)
+        rawText = await ocrPdfWithVision(buffer, body.pages || 3)
         extractorUsed = "vision-ocr"
 
-        console.log("[v0] Vision OCR completed after pdf-parse failure:", {
-          used: "vision-ocr",
-          textLength: rawText.length,
-        })
-
-        if (rawText.trim().length === 0) {
+        if (rawText.trim().length < 50) {
           return bad(400, {
             error: "OCR returned no text",
-            details: { size: bytes },
-            meta: {
-              contentType,
-              status: fRes.status,
-              size: bytes,
-              used: "vision-ocr",
-            },
+            meta: { contentType, status: fRes.status, size: bytes, used: "vision-ocr", parsedCount: 0 },
           })
         }
       } catch (ocrError) {
         return bad(500, {
           error: "Both PDF parsing and OCR failed",
-          details: "pdf-parse threw; OCR also failed",
-          meta: {
-            contentType,
-            status: fRes.status,
-            size: bytes,
-            used: "vision-ocr",
-          },
+          details: "Unable to extract text from document",
+          meta: { contentType, status: fRes.status, size: bytes, used: "vision-ocr", parsedCount: 0 },
         })
       }
     }
 
+    const patient = extractPatientInfo(rawText)
     const findings = extractMedicalTerms(rawText)
 
-    console.log("[v0] Medical term extraction completed:", {
+    console.log("[v0] Medical extraction completed:", {
       findingsCount: findings.length,
-      textLength: rawText.length,
+      patientFields: Object.keys(patient).length,
       extractorUsed,
     })
 
@@ -477,16 +629,15 @@ export async function POST(req: Request): Promise<NextResponse<SuccessResponse |
       ok: true,
       meta: {
         contentType,
-        textLength: rawText.length,
-        parsedCount: findings.length,
-        used: extractorUsed,
-        fileUrlPrefix: body.fileUrl.slice(0, 40),
         size: bytes,
         status: fRes.status,
+        used: extractorUsed,
+        parsedCount: findings.length,
       },
+      patient,
       data: {
         findings,
-        previewText: rawText.slice(0, 500),
+        previewText: rawText.slice(0, 300),
       },
     })
   } catch (e: any) {
