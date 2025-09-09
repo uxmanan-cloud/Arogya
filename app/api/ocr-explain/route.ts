@@ -119,6 +119,7 @@ type ExtractionMeta = {
   textLength: number
   parsedCount: number
   used: "pdf-parse" | "ocr"
+  fileUrlPrefix?: string
 }
 
 type SuccessResponse = {
@@ -370,6 +371,7 @@ export async function POST(req: Request): Promise<NextResponse<SuccessResponse |
         textLength: rawText.length,
         parsedCount: findings.length,
         used: extractorUsed,
+        fileUrlPrefix: body.fileUrl.slice(0, 40),
       },
       data: {
         findings,
