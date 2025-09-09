@@ -5,7 +5,7 @@ export const runtime = "nodejs"
 export async function GET() {
   let hasPdfParse = false
   try {
-    await import("pdf-parse")
+    require.resolve("pdf-parse")
     hasPdfParse = true
   } catch {
     hasPdfParse = false
