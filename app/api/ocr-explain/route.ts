@@ -118,8 +118,10 @@ type ExtractionMeta = {
   contentType: string | null
   textLength: number
   parsedCount: number
-  used: "pdf-parse" | "ocr"
+  used: "pdf-parse" | "diagnostic"
   fileUrlPrefix?: string
+  size?: number
+  status?: number
 }
 
 type SuccessResponse = {
@@ -134,7 +136,8 @@ type SuccessResponse = {
 type ErrorResponse = {
   ok: false
   error: string
-  details?: string
+  details?: any
+  meta?: Partial<ExtractionMeta>
 }
 
 function extractMedicalTerms(text: string): TermValueItem[] {
@@ -223,7 +226,12 @@ export async function POST(req: Request): Promise<NextResponse<SuccessResponse |
       return bad(400, { error: "fileUrl is required" })
     }
 
-    if (body.fileUrl.startsWith("./") || body.fileUrl.startsWith("/") || body.fileUrl.includes("test/data")) {
+    if (
+      body.fileUrl.startsWith("./") ||
+      body.fileUrl.startsWith("/") ||
+      body.fileUrl.includes("test/data") ||
+      body.fileUrl.includes("file://")
+    ) {
       return bad(400, { error: "Local file paths are not allowed" })
     }
 
@@ -287,9 +295,13 @@ export async function POST(req: Request): Promise<NextResponse<SuccessResponse |
     }
 
     console.log("[v0] Fetching file from URL:", body.fileUrl)
+
     let fRes: Response
     try {
-      fRes = await fetch(body.fileUrl, { redirect: "follow", cache: "no-store" })
+      fRes = await fetch(body.fileUrl, {
+        redirect: "follow",
+        cache: "no-store",
+      })
     } catch (fetchError) {
       return bad(502, {
         error: "Could not fetch file",
@@ -298,62 +310,104 @@ export async function POST(req: Request): Promise<NextResponse<SuccessResponse |
     }
 
     if (!fRes.ok) {
-      return bad(502, { error: "Could not fetch file", details: `HTTP ${fRes.status}: ${fRes.statusText}` })
+      return bad(502, {
+        error: "Could not fetch file",
+        details: `${fRes.status} ${fRes.statusText}`,
+        meta: {
+          contentType: fRes.headers.get("content-type"),
+          status: fRes.status,
+          used: "diagnostic",
+        },
+      })
     }
 
     const contentType = fRes.headers.get("content-type") || ""
-    const isPdf = contentType.includes("application/pdf")
-    const isImage = contentType.startsWith("image/")
-    const buf = await fRes.arrayBuffer()
+
+    const arrayBuffer = await fRes.arrayBuffer()
+    const buffer = Buffer.from(arrayBuffer)
+    const bytes = buffer.length
 
     console.log("[v0] File fetched successfully:", {
       contentType,
-      size: buf.byteLength,
-      isPdf,
-      isImage,
+      size: bytes,
+      status: fRes.status,
     })
 
-    let rawText = ""
-    let extractorUsed: "pdf-parse" | "ocr" = "pdf-parse"
+    if (bytes >= 5) {
+      const first5Bytes = buffer.subarray(0, 5).toString("ascii")
+      const first20Hex = buffer.subarray(0, Math.min(20, bytes)).toString("hex")
 
-    if (isPdf) {
-      try {
-        const pdfParse = (await import("pdf-parse")).default as any
-        const nodeBuf = Buffer.from(buf)
-        const res = await pdfParse(nodeBuf) // Only Buffer allowed here
-        rawText = String(res?.text || "")
-        extractorUsed = "pdf-parse"
-
-        console.log("[v0] PDF processing completed:", {
-          used: "pdf-parse",
-          textLength: rawText.length,
-          hasText: rawText.trim().length > 0,
-        })
-
-        // If PDF has no text layer, indicate OCR is needed
-        if (rawText.trim().length < 10) {
-          return bad(400, {
-            error: "No text extracted; OCR not enabled",
-            details:
-              "This appears to be a scanned PDF without a text layer. OCR functionality is not currently enabled.",
-          })
-        }
-      } catch (pdfError) {
-        return bad(500, {
-          error: "PDF parsing failed",
-          details: "Unable to parse PDF content",
+      if (first5Bytes !== "%PDF-") {
+        return bad(400, {
+          error: "Not a PDF or URL expired",
+          details: {
+            contentType,
+            status: fRes.status,
+            size: bytes,
+            head: first20Hex,
+          },
+          meta: {
+            contentType,
+            status: fRes.status,
+            size: bytes,
+            used: "diagnostic",
+          },
         })
       }
-    } else if (isImage) {
-      // OCR for images (feature-flagged for future implementation)
-      return bad(400, {
-        error: "No text extracted; OCR not enabled",
-        details: "Image OCR is not currently enabled. Please upload a PDF with a text layer.",
-      })
     } else {
       return bad(400, {
-        error: "Unsupported file type",
-        details: `Content-Type '${contentType}' is not supported. Please upload a PDF or image file.`,
+        error: "File too small to be a valid PDF",
+        details: {
+          contentType,
+          status: fRes.status,
+          size: bytes,
+        },
+        meta: {
+          contentType,
+          status: fRes.status,
+          size: bytes,
+          used: "diagnostic",
+        },
+      })
+    }
+
+    let rawText = ""
+    let extractorUsed: "pdf-parse" | "diagnostic" = "pdf-parse"
+
+    try {
+      const pdfParse = (await import("pdf-parse")).default as any
+      const res = await pdfParse(buffer)
+      rawText = String(res?.text || "")
+      extractorUsed = "pdf-parse"
+
+      console.log("[v0] PDF processing completed:", {
+        used: "pdf-parse",
+        textLength: rawText.length,
+        hasText: rawText.trim().length > 0,
+      })
+
+      if (rawText.length === 0) {
+        return bad(400, {
+          error: "No text layer; OCR not enabled",
+          details: { size: bytes },
+          meta: {
+            contentType,
+            status: fRes.status,
+            size: bytes,
+            used: "pdf-parse",
+          },
+        })
+      }
+    } catch (pdfError) {
+      return bad(500, {
+        error: "PDF parsing failed",
+        details: "pdf-parse threw; likely scanned/encrypted PDF",
+        meta: {
+          contentType,
+          status: fRes.status,
+          size: bytes,
+          used: "pdf-parse",
+        },
       })
     }
 
@@ -372,6 +426,8 @@ export async function POST(req: Request): Promise<NextResponse<SuccessResponse |
         parsedCount: findings.length,
         used: extractorUsed,
         fileUrlPrefix: body.fileUrl.slice(0, 40),
+        size: bytes,
+        status: fRes.status,
       },
       data: {
         findings,
