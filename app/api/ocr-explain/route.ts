@@ -19,7 +19,7 @@ async function rasterizePdfPages(
   pages: Array<{ page: number; pngBytes: Buffer; widthPx: number; heightPx: number; rendered: boolean }>
   diagnostics: { pagesTried: number; renderSizes: Array<{ page: number; width: number; height: number }> }
 }> {
-  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.js")
+  const pdfjs = await import("pdfjs-dist")
   const { createCanvas } = await import("@napi-rs/canvas")
 
   // Configure pdfjs for Node.js
