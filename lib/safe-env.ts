@@ -1,0 +1,18 @@
+export const ENV = {
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "",
+  GOOGLE_PROJECT_ID: process.env.GOOGLE_PROJECT_ID ?? "",
+  GOOGLE_CLOUD_VISION_KEY: process.env.GOOGLE_CLOUD_VISION_KEY ?? "",
+  GOOGLE_TRANSLATE_KEY: process.env.GOOGLE_TRANSLATE_KEY ?? "",
+  SUPABASE_URL: process.env.SUPABASE_URL ?? "",
+  SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY ?? "",
+  SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY ?? "",
+  SUPABASE_SERVICE_ROLE: process.env.SUPABASE_SERVICE_ROLE ?? "", // Added SUPABASE_SERVICE_ROLE environment variable for server-side uploads
+  PDF_API_KEY: process.env.PDF_API_KEY ?? "",
+  PDF_TEMPLATE_ID: process.env.PDF_TEMPLATE_ID ?? "",
+  APP_BASE_URL: process.env.APP_BASE_URL ?? "",
+  MOCK_MODE: (process.env.MOCK_MODE ?? "true").toLowerCase() === "true",
+  NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL ?? "",
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "",
+  NEXT_PUBLIC_MOCK_MODE: process.env.NEXT_PUBLIC_MOCK_MODE ?? "true",
+  SUPABASE_BUCKET: process.env.SUPABASE_BUCKET ?? "reports",
+}
