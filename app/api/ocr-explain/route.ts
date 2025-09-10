@@ -32,8 +32,21 @@ async function rasterizePdfPages(
   pages: Array<{ page: number; pngBytes: Buffer; widthPx: number; heightPx: number; rendered: boolean }>
   diagnostics: { pagesTried: number; renderSizes: Array<{ page: number; width: number; height: number }> }
 }> {
+  if (isServerlessEnvironment()) {
+    console.log("[v0] Skipping PDF rasterization in serverless environment")
+    throw new Error("PDF rasterization not available in serverless environment")
+  }
+
   const pdfjs = await import("pdfjs-dist")
-  const { createCanvas } = await import("@napi-rs/canvas")
+
+  let createCanvas: any
+  try {
+    const canvasModule = await import("@napi-rs/canvas")
+    createCanvas = canvasModule.createCanvas
+  } catch (canvasError) {
+    console.log("[v0] Canvas not available, skipping rasterization")
+    throw new Error("Canvas not available for PDF rasterization")
+  }
 
   const loadingTask = pdfjs.getDocument({
     data: buffer,
@@ -765,11 +778,14 @@ export async function POST(req: Request): Promise<NextResponse<SuccessResponse |
         renderSizes: renderSizes.map((r) => `${r.width}x${r.height}`),
       })
     } catch (rasterError) {
-      return bad(500, {
-        error: "PDF rasterization failed",
-        details: "Unable to convert PDF pages to images for OCR",
-        meta: { contentType, status: fRes.status, size: bytes, used: "pdf-parse", parsedCount: 0 },
-      })
+      console.log("[v0] PDF rasterization failed, skipping to text-only OCR:", rasterError)
+      enginesSkipped.push("pdf-rasterization")
+
+      // Continue without rasterized pages - rely on Vision OCR with original PDF or Tesseract fallback
+      rasterResult = {
+        pages: [],
+        diagnostics: { pagesTried: 0, renderSizes: [] },
+      }
     }
 
     // Stage 3: Try Vision OCR
