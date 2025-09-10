@@ -5,11 +5,23 @@ import { ENV } from "@/lib/safe-env"
 export const runtime = "nodejs"
 
 // Lazy imports for server-only libs
-async function readPdfText(buf: ArrayBuffer) {
-  const pdfParse = (await import("pdf-parse")).default as any
-  const nodeBuf = Buffer.from(buf)
-  const res = await pdfParse(nodeBuf)
-  return String(res?.text || "")
+async function readPdfText(buffer: Buffer): Promise<string> {
+  try {
+    const pdfParse = (await import("pdf-parse")).default as any
+
+    // Ensure we're passing a proper Buffer with options to prevent fs usage
+    const options = {
+      // Disable internal file operations
+      normalizeWhitespace: false,
+      disableCombineTextItems: false,
+    }
+
+    const result = await pdfParse(buffer, options)
+    return String(result?.text || "")
+  } catch (error) {
+    console.log("[v0] pdf-parse error:", error)
+    throw error
+  }
 }
 
 async function rasterizePdfPages(
@@ -545,6 +557,16 @@ function bad(status: number, body: any): NextResponse<ErrorResponse> {
   return NextResponse.json({ ok: false, ...body }, { status })
 }
 
+function isServerlessEnvironment(): boolean {
+  try {
+    // Check if fs.readFileSync is available (not available in unenv/Vercel)
+    const fs = require("fs")
+    return typeof fs.readFileSync !== "function"
+  } catch {
+    return true // If fs module is not available, we're definitely in serverless
+  }
+}
+
 export async function POST(req: Request): Promise<NextResponse<SuccessResponse | ErrorResponse>> {
   try {
     const body = (await req.json()) as Payload
@@ -568,6 +590,7 @@ export async function POST(req: Request): Promise<NextResponse<SuccessResponse |
       mode: body.mode || "live",
       maxPages: body.pages || 3,
       hasFileUrl: !!body.fileUrl,
+      isServerless: isServerlessEnvironment(),
     })
 
     if (body.mode === "mock") {
@@ -682,44 +705,49 @@ export async function POST(req: Request): Promise<NextResponse<SuccessResponse |
     let renderSizes: Array<{ page: number; width: number; height: number }> = []
     const enginesSkipped: string[] = []
 
-    // Stage 1: Try pdf-parse first
-    try {
-      const pdfParse = (await import("pdf-parse")).default as any
-      const res = await pdfParse(buffer)
-      rawText = String(res?.text || "")
+    // Stage 1: Try pdf-parse first (only in non-serverless environments)
+    const skipPdfParse = isServerlessEnvironment()
 
-      console.log("[v0] pdf-parse completed:", {
-        textLength: rawText.length,
-        hasSignificantText: rawText.trim().length >= 50,
-      })
+    if (skipPdfParse) {
+      console.log("[v0] Skipping pdf-parse in serverless environment, proceeding directly to OCR")
+      enginesSkipped.push("pdf-parse")
+    } else {
+      try {
+        rawText = await readPdfText(buffer)
 
-      // If pdf-parse succeeds with sufficient text, we're done
-      if (rawText.trim().length >= 50) {
-        const patient = extractPatientInfo(rawText)
-        const findings = extractMedicalTerms(rawText)
-
-        return NextResponse.json({
-          ok: true,
-          meta: {
-            contentType,
-            size: bytes,
-            status: fRes.status,
-            used: extractorUsed,
-            parsedCount: findings.length,
-          },
-          patient,
-          data: {
-            findings,
-            previewText: rawText.slice(0, 300),
-          },
+        console.log("[v0] pdf-parse completed:", {
+          textLength: rawText.length,
+          hasSignificantText: rawText.trim().length >= 50,
         })
+
+        // If pdf-parse succeeds with sufficient text, we're done
+        if (rawText.trim().length >= 50) {
+          const patient = extractPatientInfo(rawText)
+          const findings = extractMedicalTerms(rawText)
+
+          return NextResponse.json({
+            ok: true,
+            meta: {
+              contentType,
+              size: bytes,
+              status: fRes.status,
+              used: extractorUsed,
+              parsedCount: findings.length,
+            },
+            patient,
+            data: {
+              findings,
+              previewText: rawText.slice(0, 300),
+            },
+          })
+        }
+      } catch (pdfError) {
+        console.log("[v0] pdf-parse failed, proceeding to OCR fallback:", pdfError)
       }
-    } catch (pdfError) {
-      console.log("[v0] pdf-parse failed, proceeding to OCR fallback:", pdfError)
     }
 
     // Stage 2: Rasterize PDF pages for OCR
-    console.log("[v0] pdf-parse insufficient, rasterizing PDF for OCR")
+    console.log("[v0] pdf-parse insufficient or skipped, rasterizing PDF for OCR")
 
     let rasterResult: Awaited<ReturnType<typeof rasterizePdfPages>>
     try {
@@ -762,6 +790,7 @@ export async function POST(req: Request): Promise<NextResponse<SuccessResponse |
               parsedCount: findings.length,
               pagesTried,
               renderSizes,
+              enginesSkipped,
             },
             patient,
             data: {
