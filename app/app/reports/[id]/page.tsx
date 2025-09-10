@@ -88,11 +88,17 @@ export default function ReportDetailPage({ params }: { params: { id: string } })
       // Update status to processing
       await supabase.from("reports").update({ status: "processing" }).eq("id", report.id)
 
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+      const token = session?.access_token
+
       // Call OCR API to reprocess
       const response = await fetch("/api/ocr-explain", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
           fileUrl: report.file_url,
@@ -144,10 +150,16 @@ export default function ReportDetailPage({ params }: { params: { id: string } })
     if (!report) return
 
     try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+      const token = session?.access_token
+
       const response = await fetch("/api/export-pdf", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
           reportId: report.id,

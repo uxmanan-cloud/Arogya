@@ -7,7 +7,7 @@ import { Upload, FileText, ImageIcon, X, CheckCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAnalysisStore } from "@/lib/analysis-store"
 import { ENV } from "@/lib/safe-env"
-import { getBrowserSupabase } from "@/lib/supabase/browser"
+import { getBrowserSupabase } from "@/lib/supabase/browser" // Declare the getBrowserSupabase function
 import type { User } from "@supabase/supabase-js"
 
 interface UploadZoneProps {
@@ -28,6 +28,15 @@ function generateStoragePath(originalName: string, userId?: string): string {
     // Generic path for public demo
     return `uploads/${timestamp}-${originalName}`
   }
+}
+
+const getAuthHeaders = async () => {
+  const supabase = getBrowserSupabase()
+  const {
+    data: { session },
+  } = await supabase.auth.getSession()
+  const token = session?.access_token
+  return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
 export function UploadZone({
@@ -118,7 +127,10 @@ export function UploadZone({
 
           const uploadResponse = await fetch("/api/create-signed-upload", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+              "Content-Type": "application/json",
+              ...(await getAuthHeaders()),
+            },
             body: JSON.stringify({ path }),
           })
 
