@@ -15,7 +15,7 @@ importers:
         specifier: ^3.10.0
         version: 3.10.0(react-hook-form@7.60.0(react@18.0.0))
       '@napi-rs/canvas':
-        specifier: latest
+        specifier: 0.1.79
         version: 0.1.79
       '@radix-ui/react-accordion':
         specifier: 1.2.2
@@ -156,7 +156,7 @@ importers:
         specifier: latest
         version: 1.1.1
       pdfjs-dist:
-        specifier: latest
+        specifier: 5.4.149
         version: 5.4.149
       react:
         specifier: ^18
