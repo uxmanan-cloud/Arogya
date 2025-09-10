@@ -1,12 +1,14 @@
 "use client"
 
 import type React from "react"
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Upload, FileText, ImageIcon, X, CheckCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAnalysisStore } from "@/lib/analysis-store"
 import { ENV } from "@/lib/safe-env"
+import { getBrowserSupabase } from "@/lib/supabase/browser"
+import type { User } from "@supabase/supabase-js"
 
 interface UploadZoneProps {
   onFileUpload?: (files: File[]) => void
@@ -14,9 +16,18 @@ interface UploadZoneProps {
   acceptedTypes?: string[]
 }
 
-function generateStoragePath(originalName: string): string {
+function generateStoragePath(originalName: string, userId?: string): string {
   const ext = originalName.split(".").pop()?.toLowerCase() || "pdf"
-  return `uploads/${Date.now()}-${originalName}`
+  const timestamp = Date.now()
+  const randomId = Math.random().toString(36).substring(7)
+
+  if (userId) {
+    // User-specific path for authenticated users
+    return `reports/${userId}/${timestamp}-${randomId}.${ext}`
+  } else {
+    // Generic path for public demo
+    return `uploads/${timestamp}-${originalName}`
+  }
 }
 
 export function UploadZone({
@@ -27,10 +38,30 @@ export function UploadZone({
   const [isDragOver, setIsDragOver] = useState(false)
   const [uploadedFiles, setUploadedFiles] = useState<File[]>([])
   const [isUploading, setIsUploading] = useState(false)
+  const [user, setUser] = useState<User | null>(null)
 
   const setFileUrl = useAnalysisStore((state) => state.setFileUrl)
-
+  const supabase = getBrowserSupabase()
   const supabaseConfigured = !!(ENV.NEXT_PUBLIC_SUPABASE_URL && ENV.NEXT_PUBLIC_SUPABASE_ANON_KEY)
+
+  useEffect(() => {
+    const getUser = async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser()
+      setUser(user)
+    }
+
+    getUser()
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      setUser(session?.user ?? null)
+    })
+
+    return () => subscription.unsubscribe()
+  }, [supabase.auth])
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -81,8 +112,9 @@ export function UploadZone({
 
           console.log("[v0] Starting signed upload flow for:", file.name)
 
-          const path = generateStoragePath(file.name)
+          const path = generateStoragePath(file.name, user?.id)
           console.log("[v0] Generated storage path:", path)
+          console.log("[v0] User ID:", user?.id || "anonymous")
 
           const uploadResponse = await fetch("/api/create-signed-upload", {
             method: "POST",
@@ -141,7 +173,7 @@ export function UploadZone({
         }
       }
     },
-    [acceptedTypes, maxFiles, onFileUpload, setFileUrl, supabaseConfigured],
+    [acceptedTypes, maxFiles, onFileUpload, setFileUrl, supabaseConfigured, user?.id],
   )
 
   const removeFile = useCallback(
@@ -169,6 +201,14 @@ export function UploadZone({
           <p className="text-amber-100 text-sm">
             <strong className="text-amber-50">Mock Mode:</strong> Supabase not configured. Add NEXT_PUBLIC_SUPABASE_URL
             and NEXT_PUBLIC_SUPABASE_ANON_KEY to enable real uploads.
+          </p>
+        </div>
+      )}
+
+      {user && (
+        <div className="bg-primary/10 border border-primary/20 rounded-lg p-3">
+          <p className="text-primary text-sm">
+            <strong>Authenticated:</strong> Files will be saved to your personal account ({user.email})
           </p>
         </div>
       )}

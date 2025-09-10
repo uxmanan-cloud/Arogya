@@ -1,14 +1,17 @@
 import { NextResponse } from "next/server"
 import { ENV } from "@/lib/safe-env"
 import { supabaseService } from "@/lib/supabase"
+import { requireAuth } from "@/lib/supabase/server"
 
 export const runtime = "nodejs"
 
-export async function GET() {
+export async function GET(req: Request) {
+  const auth = await requireAuth(req as any)
+
   if (ENV.MOCK_MODE) {
     return NextResponse.json({
       ok: true,
-      uploadUrl: `${ENV.SUPABASE_URL}/storage/v1/object/reports/mock-${Date.now()}.pdf`,
+      uploadUrl: `${ENV.SUPABASE_URL}/storage/v1/object/reports/${auth.userId}/mock-${Date.now()}.pdf`,
       maxBytes: 25 * 1024 * 1024,
       allowed: [".pdf", ".png", ".jpg", ".jpeg"],
       mock: true,
@@ -18,7 +21,7 @@ export async function GET() {
   if (ENV.SUPABASE_URL && ENV.SUPABASE_SERVICE_ROLE_KEY) {
     try {
       const supabase = supabaseService()
-      const fileName = `report-${Date.now()}-${Math.random().toString(36).substring(7)}`
+      const fileName = `reports/${auth.userId}/report-${Date.now()}-${Math.random().toString(36).substring(7)}`
 
       const { data, error } = await supabase.storage.from("reports").createSignedUploadUrl(fileName)
 

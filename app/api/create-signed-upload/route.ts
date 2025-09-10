@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { ENV } from "@/lib/safe-env"
+import { requireAuth } from "@/lib/supabase/server"
 
 export const runtime = "nodejs"
 
@@ -19,18 +20,24 @@ function createServiceRoleClient() {
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuth(req as any)
+
     const { path } = await req.json()
 
     if (!path || typeof path !== "string") {
       return NextResponse.json({ error: "path is required" }, { status: 400 })
     }
 
-    console.log("[v0] Creating signed upload URL for path:", path)
+    const userPath = path.startsWith(`reports/${auth.userId}/`)
+      ? path
+      : `reports/${auth.userId}/${path.replace(/^reports\//, "")}`
+
+    console.log("[v0] Creating signed upload URL for path:", userPath)
 
     const supabase = createServiceRoleClient()
 
     // Generate signed upload URL using service role for the reports bucket
-    const { data, error } = await supabase.storage.from("reports").createSignedUploadUrl(path, 600) // 10 minutes
+    const { data, error } = await supabase.storage.from("reports").createSignedUploadUrl(userPath, 600) // 10 minutes
 
     if (error) {
       console.error("[v0] Signed upload URL error:", error)

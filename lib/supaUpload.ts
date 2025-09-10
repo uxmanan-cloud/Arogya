@@ -21,7 +21,7 @@ export interface UploadResult {
   error?: string
 }
 
-export async function uploadFile(file: File): Promise<UploadResult> {
+export async function uploadFile(file: File, userId?: string): Promise<UploadResult> {
   try {
     const supabase = getSupabaseClient()
 
@@ -51,11 +51,20 @@ export async function uploadFile(file: File): Promise<UploadResult> {
       console.log("[v0] User session error:", userError)
     }
 
-    // Generate clean, safe key
     const ext = file.name.split(".").pop()?.toLowerCase() || "pdf"
-    const key = `user-uploads/${Date.now()}-${crypto.randomUUID()}.${ext}`
+    const currentUserId = userId || user?.id
+
+    let key: string
+    if (currentUserId) {
+      // User-specific path for authenticated users
+      key = `reports/${currentUserId}/${Date.now()}-${crypto.randomUUID()}.${ext}`
+    } else {
+      // Fallback to generic path for unauthenticated users (public demo)
+      key = `uploads/${Date.now()}-${crypto.randomUUID()}.${ext}`
+    }
 
     console.log("[v0] Generated upload key:", key)
+    console.log("[v0] User ID:", currentUserId || "anonymous")
 
     const bucketName = ENV.SUPABASE_BUCKET || "reports"
     console.log("[v0] Target bucket:", bucketName)
@@ -84,10 +93,10 @@ export async function uploadFile(file: File): Promise<UploadResult> {
       ) {
         console.error("[v0] === RLS POLICY ISSUE DETECTED ===")
         console.error("[v0] Missing RLS policy for bucket:", bucketName)
-        console.error("[v0] Required policy: Allow INSERT on storage.objects for anon users")
+        console.error("[v0] Required policy: Allow INSERT on storage.objects for authenticated users")
         console.error("[v0] Suggested policy SQL:")
         console.error(
-          `[v0] CREATE POLICY "Allow anon uploads" ON storage.objects FOR INSERT TO anon WITH CHECK (bucket_id = '${bucketName}');`,
+          `[v0] CREATE POLICY "Allow authenticated uploads" ON storage.objects FOR INSERT TO authenticated WITH CHECK (bucket_id = '${bucketName}' AND (storage.foldername(name))[1] = auth.uid()::text);`,
         )
       }
 

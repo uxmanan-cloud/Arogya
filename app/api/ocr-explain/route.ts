@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { ENV } from "@/lib/safe-env"
+import { requireAuth } from "@/lib/supabase/server"
 
 // Node runtime
 export const runtime = "nodejs"
@@ -9,7 +10,7 @@ async function readPdfText(buffer: Buffer): Promise<string> {
   try {
     const pdfParse = (await import("pdf-parse")).default as any
 
-    // Ensure we're passing a proper Buffer with options to prevent fs usage
+    // Ensure we're passing a proper Buffer with options to prevent internal file operations
     const options = {
       // Disable internal file operations
       normalizeWhitespace: false,
@@ -558,17 +559,20 @@ function bad(status: number, body: any): NextResponse<ErrorResponse> {
 }
 
 function isServerlessEnvironment(): boolean {
-  try {
-    // Check if fs.readFileSync is available (not available in unenv/Vercel)
-    const fs = require("fs")
-    return typeof fs.readFileSync !== "function"
-  } catch {
-    return true // If fs module is not available, we're definitely in serverless
-  }
+  // Check for Vercel environment variables or other serverless indicators
+  return !!(
+    process.env.VERCEL ||
+    process.env.VERCEL_ENV ||
+    process.env.AWS_LAMBDA_FUNCTION_NAME ||
+    process.env.NETLIFY ||
+    process.env.CF_PAGES
+  )
 }
 
 export async function POST(req: Request): Promise<NextResponse<SuccessResponse | ErrorResponse>> {
   try {
+    const auth = await requireAuth(req as any)
+
     const body = (await req.json()) as Payload
 
     if (!body?.fileUrl || typeof body.fileUrl !== "string") {
@@ -587,6 +591,7 @@ export async function POST(req: Request): Promise<NextResponse<SuccessResponse |
     }
 
     console.log("[v0] Processing medical PDF with robust OCR fallback:", {
+      userId: auth.userId,
       mode: body.mode || "live",
       maxPages: body.pages || 3,
       hasFileUrl: !!body.fileUrl,
