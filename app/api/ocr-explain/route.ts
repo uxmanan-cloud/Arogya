@@ -22,14 +22,11 @@ async function rasterizePdfPages(
   const pdfjs = await import("pdfjs-dist")
   const { createCanvas } = await import("@napi-rs/canvas")
 
-  // Configure pdfjs for Node.js
   const loadingTask = pdfjs.getDocument({
     data: buffer,
-    useSystemFonts: true,
-    enableXfa: true,
-    cMapUrl: "/node_modules/pdfjs-dist/cmaps/",
-    cMapPacked: true,
-    standardFontDataUrl: "/node_modules/pdfjs-dist/standard_fonts/",
+    useSystemFonts: false, // Disable system fonts in serverless
+    enableXfa: false, // Disable XFA forms for better compatibility
+    verbosity: 0, // Reduce logging
   })
 
   const pdf = await loadingTask.promise
@@ -40,82 +37,94 @@ async function rasterizePdfPages(
   console.log("[v0] Rasterizing PDF:", { totalPages: pdf.numPages, processingPages: numPages })
 
   for (let pageNum = 1; pageNum <= numPages; pageNum++) {
-    const page = await pdf.getPage(pageNum)
-    const baseViewport = page.getViewport({ scale: 1.0 })
+    try {
+      const page = await pdf.getPage(pageNum)
+      const baseViewport = page.getViewport({ scale: 1.0 })
 
-    // Calculate scale for target width 1800-2200px (≈170-200 DPI on A4)
-    const targetWidth = 2000
-    let scale = targetWidth / baseViewport.width
-    let viewport = page.getViewport({ scale })
+      // Calculate scale for target width 1800-2200px (≈170-200 DPI on A4)
+      const targetWidth = 2000
+      let scale = targetWidth / baseViewport.width
+      let viewport = page.getViewport({ scale })
 
-    // Cap maximum width at 2800px
-    if (viewport.width > 2800) {
-      scale = 2800 / baseViewport.width
-      viewport = page.getViewport({ scale })
+      // Cap maximum width at 2800px
+      if (viewport.width > 2800) {
+        scale = 2800 / baseViewport.width
+        viewport = page.getViewport({ scale })
+      }
+
+      console.log("[v0] Rendering page", pageNum, "at", Math.round(viewport.width), "x", Math.round(viewport.height))
+
+      const canvas = createCanvas(viewport.width, viewport.height)
+      const context = canvas.getContext("2d")
+
+      const renderContext = {
+        canvasContext: context,
+        viewport: viewport,
+      }
+
+      await page.render(renderContext).promise
+
+      let pngBytes = canvas.toBuffer("image/png")
+      let finalWidth = viewport.width
+      let finalHeight = viewport.height
+
+      // Check if image appears blank (average luminance very light or very dark)
+      const imageData = context.getImageData(0, 0, viewport.width, viewport.height)
+      const pixels = imageData.data
+      let totalLuminance = 0
+
+      for (let i = 0; i < pixels.length; i += 4) {
+        const r = pixels[i]
+        const g = pixels[i + 1]
+        const b = pixels[i + 2]
+        totalLuminance += 0.299 * r + 0.587 * g + 0.114 * b
+      }
+
+      const avgLuminance = totalLuminance / (pixels.length / 4)
+      const isBlank = avgLuminance < 10 || avgLuminance > 245
+
+      // Re-render at higher scale if blank and width < 1400px
+      if (isBlank && viewport.width < 1400) {
+        console.log("[v0] Page appears blank, re-rendering at 1.5x scale")
+        const higherScale = Math.min(scale * 1.5, 2800 / baseViewport.width)
+        const higherViewport = page.getViewport({ scale: higherScale })
+
+        const higherCanvas = createCanvas(higherViewport.width, higherViewport.height)
+        const higherContext = higherCanvas.getContext("2d")
+
+        await page.render({
+          canvasContext: higherContext,
+          viewport: higherViewport,
+        }).promise
+
+        pngBytes = higherCanvas.toBuffer("image/png")
+        finalWidth = higherViewport.width
+        finalHeight = higherViewport.height
+      }
+
+      pages.push({
+        page: pageNum,
+        pngBytes,
+        widthPx: Math.round(finalWidth),
+        heightPx: Math.round(finalHeight),
+        rendered: true,
+      })
+
+      renderSizes.push({
+        page: pageNum,
+        width: Math.round(finalWidth),
+        height: Math.round(finalHeight),
+      })
+
+      page.cleanup()
+    } catch (pageError) {
+      console.error(`[v0] Failed to render page ${pageNum}:`, pageError)
+      // Continue with other pages even if one fails
+      continue
     }
-
-    console.log("[v0] Rendering page", pageNum, "at", Math.round(viewport.width), "x", Math.round(viewport.height))
-
-    const canvas = createCanvas(viewport.width, viewport.height)
-    const context = canvas.getContext("2d")
-
-    await page.render({
-      canvasContext: context,
-      viewport: viewport,
-    }).promise
-
-    let pngBytes = canvas.toBuffer("image/png")
-    let finalWidth = viewport.width
-    let finalHeight = viewport.height
-
-    // Check if image appears blank (average luminance very light or very dark)
-    const imageData = context.getImageData(0, 0, viewport.width, viewport.height)
-    const pixels = imageData.data
-    let totalLuminance = 0
-
-    for (let i = 0; i < pixels.length; i += 4) {
-      const r = pixels[i]
-      const g = pixels[i + 1]
-      const b = pixels[i + 2]
-      totalLuminance += 0.299 * r + 0.587 * g + 0.114 * b
-    }
-
-    const avgLuminance = totalLuminance / (pixels.length / 4)
-    const isBlank = avgLuminance < 10 || avgLuminance > 245
-
-    // Re-render at higher scale if blank and width < 1400px
-    if (isBlank && viewport.width < 1400) {
-      console.log("[v0] Page appears blank, re-rendering at 1.5x scale")
-      const higherScale = Math.min(scale * 1.5, 2800 / baseViewport.width)
-      const higherViewport = page.getViewport({ scale: higherScale })
-
-      const higherCanvas = createCanvas(higherViewport.width, higherViewport.height)
-      const higherContext = higherCanvas.getContext("2d")
-
-      await page.render({
-        canvasContext: higherContext,
-        viewport: higherViewport,
-      }).promise
-
-      pngBytes = higherCanvas.toBuffer("image/png")
-      finalWidth = higherViewport.width
-      finalHeight = higherViewport.height
-    }
-
-    pages.push({
-      page: pageNum,
-      pngBytes,
-      widthPx: Math.round(finalWidth),
-      heightPx: Math.round(finalHeight),
-      rendered: true,
-    })
-
-    renderSizes.push({
-      page: pageNum,
-      width: Math.round(finalWidth),
-      height: Math.round(finalHeight),
-    })
   }
+
+  pdf.destroy()
 
   return {
     pages,
