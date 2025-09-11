@@ -22,8 +22,6 @@ interface Report {
   processed_at: string | null
 }
 
-export const dynamic = "force-dynamic"
-
 export default function DashboardPage() {
   const [reports, setReports] = useState<Report[]>([])
   const [loading, setLoading] = useState(true)

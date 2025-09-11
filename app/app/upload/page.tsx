@@ -12,8 +12,6 @@ import { ArrowLeft, Upload, FileText, CheckCircle, AlertCircle, Loader2 } from "
 import Link from "next/link"
 import { getBrowserSupabase } from "@/lib/supabase/browser"
 
-export const dynamic = "force-dynamic"
-
 interface UploadState {
   status: "idle" | "uploading" | "processing" | "completed" | "error"
   progress: number

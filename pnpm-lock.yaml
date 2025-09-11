@@ -15,7 +15,7 @@ importers:
         specifier: ^3.10.0
         version: 3.10.0(react-hook-form@7.60.0(react@18.0.0))
       '@napi-rs/canvas':
-        specifier: 0.1.79
+        specifier: latest
         version: 0.1.79
       '@radix-ui/react-accordion':
         specifier: 1.2.2
@@ -148,7 +148,7 @@ importers:
         version: 0.4.6(react-dom@18.0.0(react@18.0.0))(react@18.0.0)
       openai:
         specifier: latest
-        version: 5.20.0(ws@8.18.3)(zod@3.25.67)
+        version: 5.20.1(ws@8.18.3)(zod@3.25.67)
       path:
         specifier: latest
         version: 0.12.7
@@ -156,7 +156,7 @@ importers:
         specifier: latest
         version: 1.1.1
       pdfjs-dist:
-        specifier: 5.4.149
+        specifier: latest
         version: 5.4.149
       react:
         specifier: ^18
@@ -1803,8 +1803,8 @@ packages:
   once@1.4.0:
     resolution: {integrity: sha512-lNaJgI+2Q5URQBkccEKHTQOPaXdUxnZZElQTZY0MFUAuaEqe1E+Nyvgdz/aIyNi6Z9MzO5dv1H8n58/GELp3+w==}
 
-  openai@5.20.0:
-    resolution: {integrity: sha512-Bmc2zLM/YWgFrDpXr9hwXqGGDdMmMpE9+qoZPsaHpn0Y/Qk1Vu26hNqXo7+nHdli+sLsXINvS1f8kR3NKhGKmA==}
+  openai@5.20.1:
+    resolution: {integrity: sha512-UndCB0R5V3iB9I98NyF69zNP6YfwU4+Fjk0eW4HhooTm+Awlpm/MGjJTwJsyNV/qkH1NJi0GG+9odwukGTqExQ==}
     hasBin: true
     peerDependencies:
       ws: ^8.18.0
@@ -3699,7 +3699,7 @@ snapshots:
     dependencies:
       wrappy: 1.0.2
 
-  openai@5.20.0(ws@8.18.3)(zod@3.25.67):
+  openai@5.20.1(ws@8.18.3)(zod@3.25.67):
     optionalDependencies:
       ws: 8.18.3
       zod: 3.25.67

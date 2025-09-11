@@ -26,11 +26,9 @@ export function Navigation() {
   useEffect(() => {
     // Get initial session
     const getUser = async () => {
-      console.log("[v0] Navigation: Getting initial user session")
       const {
         data: { user },
       } = await supabase.auth.getUser()
-      console.log("[v0] Navigation: Initial user:", user ? { id: user.id, email: user.email } : null)
       setUser(user)
       setLoading(false)
     }
@@ -41,11 +39,6 @@ export function Navigation() {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, session) => {
-      console.log(
-        "[v0] Navigation: Auth state changed:",
-        event,
-        session?.user ? { id: session.user.id, email: session.user.email } : null,
-      )
       setUser(session?.user ?? null)
       setLoading(false)
     })
@@ -54,7 +47,6 @@ export function Navigation() {
   }, [supabase.auth])
 
   const handleSignOut = async () => {
-    console.log("[v0] Navigation: Signing out user")
     await supabase.auth.signOut()
     router.push("/")
   }
@@ -136,62 +128,56 @@ export function Navigation() {
             {loading ? (
               <div className="w-8 h-8 bg-muted animate-pulse rounded-full" />
             ) : user ? (
-              <>
-                {console.log("[v0] Navigation: Rendering authenticated user dropdown for:", user.email)}
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" className="relative h-8 w-8 rounded-full">
-                      <Avatar className="h-8 w-8">
-                        <AvatarImage
-                          src={user.user_metadata?.avatar_url || "/placeholder.svg"}
-                          alt={user.user_metadata?.full_name}
-                        />
-                        <AvatarFallback className="bg-primary text-primary-foreground">
-                          {user.user_metadata?.full_name ? getUserInitials(user.user_metadata.full_name) : "U"}
-                        </AvatarFallback>
-                      </Avatar>
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent className="w-56 bg-background border border-white/20" align="end" forceMount>
-                    <div className="flex items-center justify-start gap-2 p-2">
-                      <div className="flex flex-col space-y-1 leading-none">
-                        {user.user_metadata?.full_name && <p className="font-medium">{user.user_metadata.full_name}</p>}
-                        <p className="w-[200px] truncate text-sm text-muted-foreground">{user.email}</p>
-                      </div>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" className="relative h-8 w-8 rounded-full">
+                    <Avatar className="h-8 w-8">
+                      <AvatarImage
+                        src={user.user_metadata?.avatar_url || "/placeholder.svg"}
+                        alt={user.user_metadata?.full_name}
+                      />
+                      <AvatarFallback className="bg-primary text-primary-foreground">
+                        {user.user_metadata?.full_name ? getUserInitials(user.user_metadata.full_name) : "U"}
+                      </AvatarFallback>
+                    </Avatar>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent className="w-56 bg-background border border-white/20" align="end" forceMount>
+                  <div className="flex items-center justify-start gap-2 p-2">
+                    <div className="flex flex-col space-y-1 leading-none">
+                      {user.user_metadata?.full_name && <p className="font-medium">{user.user_metadata.full_name}</p>}
+                      <p className="w-[200px] truncate text-sm text-muted-foreground">{user.email}</p>
                     </div>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem asChild>
-                      <Link href="/app" className="cursor-pointer">
-                        <FileText className="mr-2 h-4 w-4" />
-                        My Reports
-                      </Link>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem asChild>
-                      <Link href="/app/upload" className="cursor-pointer">
-                        <Upload className="mr-2 h-4 w-4" />
-                        Upload Report
-                      </Link>
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem onClick={handleSignOut} className="cursor-pointer">
-                      <LogOut className="mr-2 h-4 w-4" />
-                      Sign out
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </>
+                  </div>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem asChild>
+                    <Link href="/app" className="cursor-pointer">
+                      <FileText className="mr-2 h-4 w-4" />
+                      My Reports
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <Link href="/app/upload" className="cursor-pointer">
+                      <Upload className="mr-2 h-4 w-4" />
+                      Upload Report
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={handleSignOut} className="cursor-pointer">
+                    <LogOut className="mr-2 h-4 w-4" />
+                    Sign out
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             ) : (
-              <>
-                {console.log("[v0] Navigation: Rendering unauthenticated state")}
-                <div className="flex items-center space-x-2">
-                  <Button asChild variant="ghost" className="text-foreground hover:text-foreground">
-                    <Link href="/auth/signin">Sign in</Link>
-                  </Button>
-                  <Button asChild className="bg-primary hover:bg-primary/90">
-                    <Link href="/auth/signup">Get Started</Link>
-                  </Button>
-                </div>
-              </>
+              <div className="flex items-center space-x-2">
+                <Button asChild variant="ghost" className="text-foreground hover:text-foreground">
+                  <Link href="/auth/signin">Sign in</Link>
+                </Button>
+                <Button asChild className="bg-primary hover:bg-primary/90">
+                  <Link href="/auth/signup">Get Started</Link>
+                </Button>
+              </div>
             )}
           </div>
 

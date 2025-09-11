@@ -25,8 +25,6 @@ import {
 import { getBrowserSupabase } from "@/lib/supabase/browser"
 import { formatDistanceToNow } from "date-fns"
 
-export const dynamic = "force-dynamic"
-
 interface Report {
   id: string
   user_id: string
@@ -56,6 +54,7 @@ export default function ReportDetailPage({ params }: { params: { id: string } })
   const [error, setError] = useState("")
   const [reprocessing, setReprocessing] = useState(false)
   const router = useRouter()
+  const supabase = getBrowserSupabase()
 
   useEffect(() => {
     fetchReport()
@@ -63,7 +62,6 @@ export default function ReportDetailPage({ params }: { params: { id: string } })
 
   const fetchReport = async () => {
     try {
-      const supabase = getBrowserSupabase()
       const { data, error } = await supabase.from("reports").select("*").eq("id", params.id).single()
 
       if (error) {
@@ -87,8 +85,6 @@ export default function ReportDetailPage({ params }: { params: { id: string } })
 
     setReprocessing(true)
     try {
-      const supabase = getBrowserSupabase()
-
       // Update status to processing
       await supabase.from("reports").update({ status: "processing" }).eq("id", report.id)
 
@@ -143,7 +139,6 @@ export default function ReportDetailPage({ params }: { params: { id: string } })
 
       // Reset status back to completed if it was completed before
       if (report.status === "completed") {
-        const supabase = getBrowserSupabase()
         await supabase.from("reports").update({ status: "completed" }).eq("id", report.id)
       }
     } finally {
@@ -155,8 +150,6 @@ export default function ReportDetailPage({ params }: { params: { id: string } })
     if (!report) return
 
     try {
-      const supabase = getBrowserSupabase()
-
       const {
         data: { session },
       } = await supabase.auth.getSession()
