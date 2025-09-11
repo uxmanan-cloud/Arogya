@@ -51,11 +51,8 @@ export function getServiceSupabase() {
 
 // Helper to get authenticated user from server components
 export async function getUser() {
+  const supabase = getServerSupabase(new Request())
   try {
-    // Create a proper Request object with a dummy URL for server-side usage
-    const dummyRequest = new Request("http://localhost:3000")
-    const supabase = getServerSupabase(dummyRequest)
-
     const {
       data: { user },
     } = await supabase.auth.getUser()
