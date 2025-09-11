@@ -20,11 +20,13 @@ export function Navigation() {
   const [isMenuOpen, setIsMenuOpen] = useState(false)
   const [user, setUser] = useState<SupabaseUser | null>(null)
   const [loading, setLoading] = useState(true)
+  const [mounted, setMounted] = useState(false)
   const router = useRouter()
   const supabase = getBrowserSupabase()
 
   useEffect(() => {
-    // Get initial session
+    setMounted(true)
+
     const getUser = async () => {
       const {
         data: { user },
@@ -35,7 +37,6 @@ export function Navigation() {
 
     getUser()
 
-    // Listen for auth changes
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, session) => {
@@ -47,8 +48,12 @@ export function Navigation() {
   }, [supabase.auth])
 
   const handleSignOut = async () => {
-    await supabase.auth.signOut()
-    router.push("/")
+    try {
+      await supabase.auth.signOut()
+      router.push("/")
+    } catch (error) {
+      console.error("Sign out error:", error)
+    }
   }
 
   const getUserInitials = (name: string) => {
@@ -60,6 +65,35 @@ export function Navigation() {
       .slice(0, 2)
   }
 
+  if (!mounted) {
+    return (
+      <nav
+        className="sticky top-0 z-50 bg-background/95 backdrop-blur-md border-b border-white/10"
+        role="navigation"
+        aria-label="Main navigation"
+      >
+        <div className="container mx-auto px-4">
+          <div className="flex items-center justify-between h-16">
+            <Link
+              href="/"
+              className="flex items-center space-x-2 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background rounded-md"
+            >
+              <div className="w-8 h-8 bg-gradient-to-br from-primary to-accent rounded-lg flex items-center justify-center">
+                <span className="text-white font-bold text-sm" aria-hidden="true">
+                  A
+                </span>
+              </div>
+              <span className="font-bold text-xl font-[family-name:var(--font-inter-tight)] text-foreground">
+                Arogya
+              </span>
+            </Link>
+            <div className="w-8 h-8 bg-muted animate-pulse rounded-full" />
+          </div>
+        </div>
+      </nav>
+    )
+  }
+
   return (
     <nav
       className="sticky top-0 z-50 bg-background/95 backdrop-blur-md border-b border-white/10"
@@ -69,7 +103,10 @@ export function Navigation() {
       <div className="container mx-auto px-4">
         <div className="flex items-center justify-between h-16">
           {/* Logo */}
-          <Link href="/" className="flex items-center space-x-2 focus-ring rounded-md">
+          <Link
+            href="/"
+            className="flex items-center space-x-2 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background rounded-md"
+          >
             <div className="w-8 h-8 bg-gradient-to-br from-primary to-accent rounded-lg flex items-center justify-center">
               <span className="text-white font-bold text-sm" aria-hidden="true">
                 A
@@ -84,13 +121,13 @@ export function Navigation() {
               <>
                 <Link
                   href="#about"
-                  className="text-foreground/70 hover:text-foreground transition-colors focus-ring rounded-md px-2 py-1"
+                  className="text-foreground/70 hover:text-foreground transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background rounded-md px-2 py-1"
                 >
                   About
                 </Link>
                 <Link
                   href="#how-it-works"
-                  className="text-foreground/70 hover:text-foreground transition-colors focus-ring rounded-md px-2 py-1"
+                  className="text-foreground/70 hover:text-foreground transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background rounded-md px-2 py-1"
                 >
                   How it works
                 </Link>
@@ -103,14 +140,14 @@ export function Navigation() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="gap-2 focus-ring touch-target text-foreground hover:text-foreground"
+                  className="gap-2 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background text-foreground hover:text-foreground min-h-[44px] min-w-[44px]"
                   aria-label="Select language"
                 >
                   <Globe className="w-4 h-4" aria-hidden="true" />
                   English
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="bg-background border border-white/20">
+              <DropdownMenuContent align="end" className="bg-background border border-white/20 z-[60]">
                 <DropdownMenuItem>English</DropdownMenuItem>
                 <DropdownMenuItem>हिंदी (Hindi)</DropdownMenuItem>
                 <DropdownMenuItem>தமிழ் (Tamil)</DropdownMenuItem>
@@ -130,7 +167,10 @@ export function Navigation() {
             ) : user ? (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" className="relative h-8 w-8 rounded-full">
+                  <Button
+                    variant="ghost"
+                    className="relative h-8 w-8 rounded-full min-h-[44px] min-w-[44px] focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background"
+                  >
                     <Avatar className="h-8 w-8">
                       <AvatarImage
                         src={user.user_metadata?.avatar_url || "/placeholder.svg"}
@@ -142,7 +182,11 @@ export function Navigation() {
                     </Avatar>
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent className="w-56 bg-background border border-white/20" align="end" forceMount>
+                <DropdownMenuContent
+                  className="w-56 bg-background border border-white/20 z-[60]"
+                  align="end"
+                  forceMount
+                >
                   <div className="flex items-center justify-start gap-2 p-2">
                     <div className="flex flex-col space-y-1 leading-none">
                       {user.user_metadata?.full_name && <p className="font-medium">{user.user_metadata.full_name}</p>}
@@ -163,7 +207,10 @@ export function Navigation() {
                     </Link>
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={handleSignOut} className="cursor-pointer">
+                  <DropdownMenuItem
+                    onClick={handleSignOut}
+                    className="cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary"
+                  >
                     <LogOut className="mr-2 h-4 w-4" />
                     Sign out
                   </DropdownMenuItem>
@@ -171,10 +218,17 @@ export function Navigation() {
               </DropdownMenu>
             ) : (
               <div className="flex items-center space-x-2">
-                <Button asChild variant="ghost" className="text-foreground hover:text-foreground">
+                <Button
+                  asChild
+                  variant="ghost"
+                  className="text-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background"
+                >
                   <Link href="/auth/signin">Sign in</Link>
                 </Button>
-                <Button asChild className="bg-primary hover:bg-primary/90">
+                <Button
+                  asChild
+                  className="bg-primary hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background"
+                >
                   <Link href="/auth/signup">Get Started</Link>
                 </Button>
               </div>
@@ -185,7 +239,7 @@ export function Navigation() {
           <Button
             variant="ghost"
             size="sm"
-            className="md:hidden focus-ring touch-target text-foreground hover:text-foreground"
+            className="md:hidden focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background text-foreground hover:text-foreground min-h-[44px] min-w-[44px]"
             onClick={() => setIsMenuOpen(!isMenuOpen)}
             aria-expanded={isMenuOpen}
             aria-controls="mobile-menu"
@@ -201,19 +255,19 @@ export function Navigation() {
 
         {/* Mobile Menu */}
         {isMenuOpen && (
-          <div id="mobile-menu" className="md:hidden py-4 space-y-4 border-t border-white/10 bg-background/95">
+          <div id="mobile-menu" className="md:hidden py-4 space-y-4 border-t border-white/10 bg-background/95 z-[60]">
             {!user && (
               <>
                 <Link
                   href="#about"
-                  className="block text-foreground/70 hover:text-foreground transition-colors focus-ring rounded-md px-2 py-1"
+                  className="block text-foreground/70 hover:text-foreground transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background rounded-md px-2 py-1"
                   onClick={() => setIsMenuOpen(false)}
                 >
                   About
                 </Link>
                 <Link
                   href="#how-it-works"
-                  className="block text-foreground/70 hover:text-foreground transition-colors focus-ring rounded-md px-2 py-1"
+                  className="block text-foreground/70 hover:text-foreground transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background rounded-md px-2 py-1"
                   onClick={() => setIsMenuOpen(false)}
                 >
                   How it works
@@ -229,21 +283,21 @@ export function Navigation() {
                 </div>
                 <Link
                   href="/app"
-                  className="block text-foreground/70 hover:text-foreground transition-colors focus-ring rounded-md px-2 py-1"
+                  className="block text-foreground/70 hover:text-foreground transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background rounded-md px-2 py-1"
                   onClick={() => setIsMenuOpen(false)}
                 >
                   My Reports
                 </Link>
                 <Link
                   href="/app/upload"
-                  className="block text-foreground/70 hover:text-foreground transition-colors focus-ring rounded-md px-2 py-1"
+                  className="block text-foreground/70 hover:text-foreground transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background rounded-md px-2 py-1"
                   onClick={() => setIsMenuOpen(false)}
                 >
                   Upload Report
                 </Link>
                 <Button
                   variant="ghost"
-                  className="w-full justify-start text-foreground hover:text-foreground"
+                  className="w-full justify-start text-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
                   onClick={handleSignOut}
                 >
                   Sign out
@@ -251,12 +305,19 @@ export function Navigation() {
               </div>
             ) : (
               <div className="space-y-2">
-                <Button asChild variant="ghost" className="w-full justify-start text-foreground hover:text-foreground">
+                <Button
+                  asChild
+                  variant="ghost"
+                  className="w-full justify-start text-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background"
+                >
                   <Link href="/auth/signin" onClick={() => setIsMenuOpen(false)}>
                     Sign in
                   </Link>
                 </Button>
-                <Button asChild className="w-full bg-primary hover:bg-primary/90">
+                <Button
+                  asChild
+                  className="w-full bg-primary hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background"
+                >
                   <Link href="/auth/signup" onClick={() => setIsMenuOpen(false)}>
                     Get Started
                   </Link>
@@ -269,13 +330,13 @@ export function Navigation() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="gap-2 w-full justify-start focus-ring touch-target text-foreground hover:text-foreground"
+                  className="gap-2 w-full justify-start focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background text-foreground hover:text-foreground min-h-[44px] min-w-[44px]"
                 >
                   <Globe className="w-4 h-4" aria-hidden="true" />
                   Language
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="bg-background border border-white/20">
+              <DropdownMenuContent align="start" className="bg-background border border-white/20 z-[60]">
                 <DropdownMenuItem>English</DropdownMenuItem>
                 <DropdownMenuItem>हिंदी (Hindi)</DropdownMenuItem>
                 <DropdownMenuItem>தமிழ் (Tamil)</DropdownMenuItem>
