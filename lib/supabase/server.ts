@@ -51,7 +51,7 @@ export function getServiceSupabase() {
 
 // Helper to get authenticated user from server components
 export async function getUser() {
-  const supabase = getServerSupabase(new Request())
+  const supabase = getServerSupabase(new Request("http://localhost"))
   try {
     const {
       data: { user },
