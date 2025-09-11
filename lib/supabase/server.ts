@@ -1,14 +1,26 @@
-import { createClient } from "@supabase/supabase-js"
+import { createServerClient } from "@supabase/ssr"
 import { type NextRequest, NextResponse } from "next/server"
+import { cookies } from "next/headers"
 import { ENV } from "../safe-env"
 
-export function getServerSupabase(req: Request) {
-  const url = ENV.NEXT_PUBLIC_SUPABASE_URL
-  const anon = ENV.NEXT_PUBLIC_SUPABASE_ANON_KEY
-  const authHeader = req.headers.get("Authorization") || ""
-  return createClient(url, anon, {
-    global: { headers: { Authorization: authHeader } },
-    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+export function getServerSupabase() {
+  const cookieStore = cookies()
+
+  return createServerClient(ENV.SUPABASE_URL, ENV.SUPABASE_ANON_KEY, {
+    cookies: {
+      getAll() {
+        return cookieStore.getAll()
+      },
+      setAll(cookiesToSet) {
+        try {
+          cookiesToSet.forEach(({ name, value, options }) => cookieStore.set(name, value, options))
+        } catch {
+          // The `setAll` method was called from a Server Component.
+          // This can be ignored if you have middleware refreshing
+          // user sessions.
+        }
+      },
+    },
   })
 }
 
@@ -19,7 +31,7 @@ export function getServerSupabaseFromRequest(request: NextRequest) {
     },
   })
 
-  const supabase = createClient(ENV.SUPABASE_URL, ENV.SUPABASE_ANON_KEY, {
+  const supabase = createServerClient(ENV.SUPABASE_URL, ENV.SUPABASE_ANON_KEY, {
     cookies: {
       getAll() {
         return request.cookies.getAll()
@@ -41,7 +53,7 @@ export function getServerSupabaseFromRequest(request: NextRequest) {
 
 // Service role client for admin operations
 export function getServiceSupabase() {
-  return createClient(ENV.SUPABASE_URL, ENV.SUPABASE_SERVICE_ROLE_KEY, {
+  return createServerClient(ENV.SUPABASE_URL, ENV.SUPABASE_SERVICE_ROLE_KEY, {
     cookies: {
       getAll: () => [],
       setAll: () => {},
@@ -51,7 +63,7 @@ export function getServiceSupabase() {
 
 // Helper to get authenticated user from server components
 export async function getUser() {
-  const supabase = getServerSupabase(new Request("http://localhost"))
+  const supabase = getServerSupabase()
   try {
     const {
       data: { user },

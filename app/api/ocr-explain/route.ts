@@ -10,7 +10,7 @@ async function readPdfText(buffer: Buffer): Promise<string> {
   try {
     const pdfParse = (await import("pdf-parse")).default as any
 
-    // Ensure we're passing a proper Buffer with options to prevent internal file operations
+    // Ensure we're passing a proper Buffer with options to prevent fs usage
     const options = {
       // Disable internal file operations
       normalizeWhitespace: false,
@@ -32,11 +32,116 @@ async function rasterizePdfPages(
   pages: Array<{ page: number; pngBytes: Buffer; widthPx: number; heightPx: number; rendered: boolean }>
   diagnostics: { pagesTried: number; renderSizes: Array<{ page: number; width: number; height: number }> }
 }> {
-  console.log("[v0] Canvas-based PDF rasterization not available in serverless environment")
+  const pdfjs = await import("pdfjs-dist")
+  const { createCanvas } = await import("@napi-rs/canvas")
+
+  const loadingTask = pdfjs.getDocument({
+    data: buffer,
+    useSystemFonts: false, // Disable system fonts in serverless
+    enableXfa: false, // Disable XFA forms for better compatibility
+    verbosity: 0, // Reduce logging
+  })
+
+  const pdf = await loadingTask.promise
+  const numPages = Math.min(pdf.numPages, maxPages)
+  const pages: Array<{ page: number; pngBytes: Buffer; widthPx: number; heightPx: number; rendered: boolean }> = []
+  const renderSizes: Array<{ page: number; width: number; height: number }> = []
+
+  console.log("[v0] Rasterizing PDF:", { totalPages: pdf.numPages, processingPages: numPages })
+
+  for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+    try {
+      const page = await pdf.getPage(pageNum)
+      const baseViewport = page.getViewport({ scale: 1.0 })
+
+      // Calculate scale for target width 1800-2200px (≈170-200 DPI on A4)
+      const targetWidth = 2000
+      let scale = targetWidth / baseViewport.width
+      let viewport = page.getViewport({ scale })
+
+      // Cap maximum width at 2800px
+      if (viewport.width > 2800) {
+        scale = 2800 / baseViewport.width
+        viewport = page.getViewport({ scale })
+      }
+
+      console.log("[v0] Rendering page", pageNum, "at", Math.round(viewport.width), "x", Math.round(viewport.height))
+
+      const canvas = createCanvas(viewport.width, viewport.height)
+      const context = canvas.getContext("2d")
+
+      const renderContext = {
+        canvasContext: context,
+        viewport: viewport,
+      }
+
+      await page.render(renderContext).promise
+
+      let pngBytes = canvas.toBuffer("image/png")
+      let finalWidth = viewport.width
+      let finalHeight = viewport.height
+
+      // Check if image appears blank (average luminance very light or very dark)
+      const imageData = context.getImageData(0, 0, viewport.width, viewport.height)
+      const pixels = imageData.data
+      let totalLuminance = 0
+
+      for (let i = 0; i < pixels.length; i += 4) {
+        const r = pixels[i]
+        const g = pixels[i + 1]
+        const b = pixels[i + 2]
+        totalLuminance += 0.299 * r + 0.587 * g + 0.114 * b
+      }
+
+      const avgLuminance = totalLuminance / (pixels.length / 4)
+      const isBlank = avgLuminance < 10 || avgLuminance > 245
+
+      // Re-render at higher scale if blank and width < 1400px
+      if (isBlank && viewport.width < 1400) {
+        console.log("[v0] Page appears blank, re-rendering at 1.5x scale")
+        const higherScale = Math.min(scale * 1.5, 2800 / baseViewport.width)
+        const higherViewport = page.getViewport({ scale: higherScale })
+
+        const higherCanvas = createCanvas(higherViewport.width, higherViewport.height)
+        const higherContext = higherCanvas.getContext("2d")
+
+        await page.render({
+          canvasContext: higherContext,
+          viewport: higherViewport,
+        }).promise
+
+        pngBytes = higherCanvas.toBuffer("image/png")
+        finalWidth = higherViewport.width
+        finalHeight = higherViewport.height
+      }
+
+      pages.push({
+        page: pageNum,
+        pngBytes,
+        widthPx: Math.round(finalWidth),
+        heightPx: Math.round(finalHeight),
+        rendered: true,
+      })
+
+      renderSizes.push({
+        page: pageNum,
+        width: Math.round(finalWidth),
+        height: Math.round(finalHeight),
+      })
+
+      page.cleanup()
+    } catch (pageError) {
+      console.error(`[v0] Failed to render page ${pageNum}:`, pageError)
+      // Continue with other pages even if one fails
+      continue
+    }
+  }
+
+  pdf.destroy()
 
   return {
-    pages: [],
-    diagnostics: { pagesTried: 0, renderSizes: [] },
+    pages,
+    diagnostics: { pagesTried: numPages, renderSizes },
   }
 }
 
@@ -600,9 +705,9 @@ export async function POST(req: Request): Promise<NextResponse<SuccessResponse |
     }
 
     let rawText = ""
-    const extractorUsed: "pdf-parse" | "vision-ocr" | "tesseract" = "pdf-parse"
-    const pagesTried = 0
-    const renderSizes: Array<{ page: number; width: number; height: number }> = []
+    let extractorUsed: "pdf-parse" | "vision-ocr" | "tesseract" = "pdf-parse"
+    let pagesTried = 0
+    let renderSizes: Array<{ page: number; width: number; height: number }> = []
     const enginesSkipped: string[] = []
 
     // Stage 1: Try pdf-parse first (only in non-serverless environments)
@@ -646,24 +751,114 @@ export async function POST(req: Request): Promise<NextResponse<SuccessResponse |
       }
     }
 
-    console.log("[v0] Canvas-based PDF rasterization not available in serverless environment")
-    enginesSkipped.push("canvas-rasterization", "vision", "tesseract")
+    // Stage 2: Rasterize PDF pages for OCR
+    console.log("[v0] pdf-parse insufficient or skipped, rasterizing PDF for OCR")
 
-    // Return error since OCR methods are not available without canvas
+    let rasterResult: Awaited<ReturnType<typeof rasterizePdfPages>>
+    try {
+      rasterResult = await rasterizePdfPages(buffer, body.pages || 3)
+      pagesTried = rasterResult.diagnostics.pagesTried
+      renderSizes = rasterResult.diagnostics.renderSizes
+
+      console.log("[v0] PDF rasterization completed:", {
+        pagesTried,
+        renderSizes: renderSizes.map((r) => `${r.width}x${r.height}`),
+      })
+    } catch (rasterError) {
+      return bad(500, {
+        error: "PDF rasterization failed",
+        details: "Unable to convert PDF pages to images for OCR",
+        meta: { contentType, status: fRes.status, size: bytes, used: "pdf-parse", parsedCount: 0 },
+      })
+    }
+
+    // Stage 3: Try Vision OCR
+    if (ENV.GOOGLE_SERVICE_ACCOUNT_JSON && ENV.GOOGLE_PROJECT_ID) {
+      try {
+        console.log("[v0] Attempting Vision OCR")
+        rawText = await ocrWithVision(rasterResult.pages)
+
+        if (rawText.trim().length >= 50) {
+          extractorUsed = "vision-ocr"
+          console.log("[v0] Vision OCR successful:", { textLength: rawText.length })
+
+          const patient = extractPatientInfo(rawText)
+          const findings = extractMedicalTerms(rawText)
+
+          return NextResponse.json({
+            ok: true,
+            meta: {
+              contentType,
+              size: bytes,
+              status: fRes.status,
+              used: extractorUsed,
+              parsedCount: findings.length,
+              pagesTried,
+              renderSizes,
+              enginesSkipped,
+            },
+            patient,
+            data: {
+              findings,
+              previewText: rawText.slice(0, 300),
+            },
+          })
+        }
+      } catch (visionError) {
+        console.error("[v0] Vision OCR failed:", visionError)
+      }
+    } else {
+      enginesSkipped.push("vision")
+      console.log("[v0] Vision OCR skipped - credentials not configured")
+    }
+
+    // Stage 4: Try Tesseract as last fallback
+    try {
+      console.log("[v0] Attempting Tesseract OCR as last fallback")
+      rawText = await ocrWithTesseract(rasterResult.pages, 2)
+
+      if (rawText.trim().length >= 50) {
+        extractorUsed = "tesseract"
+        console.log("[v0] Tesseract OCR successful:", { textLength: rawText.length })
+
+        const patient = extractPatientInfo(rawText)
+        const findings = extractMedicalTerms(rawText)
+
+        return NextResponse.json({
+          ok: true,
+          meta: {
+            contentType,
+            size: bytes,
+            status: fRes.status,
+            used: extractorUsed,
+            parsedCount: findings.length,
+            pagesTried,
+            renderSizes,
+            enginesSkipped,
+          },
+          patient,
+          data: {
+            findings,
+            previewText: rawText.slice(0, 300),
+          },
+        })
+      }
+    } catch (tesseractError) {
+      console.error("[v0] Tesseract OCR failed:", tesseractError)
+    }
+
+    // All OCR methods failed
     return bad(500, {
-      error: "PDF text extraction failed and OCR not available in serverless environment",
-      details: {
-        message: "Canvas-based PDF rasterization requires native dependencies not available in serverless deployments",
-        enginesSkipped,
-      },
+      error: "Both PDF parsing and OCR failed",
+      details: { pagesTried, renderSizes, enginesTried: ["vision", "tesseract"] },
       meta: {
         contentType,
         status: fRes.status,
         size: bytes,
-        used: "pdf-parse",
+        used: "tesseract",
         parsedCount: 0,
-        pagesTried: 0,
-        renderSizes: [],
+        pagesTried,
+        renderSizes,
         enginesSkipped,
       },
     })
